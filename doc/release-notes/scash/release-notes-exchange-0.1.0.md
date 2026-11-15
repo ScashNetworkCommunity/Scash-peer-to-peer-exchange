@@ -1,0 +1,3 @@
+# Scash Exchange Wallet v0.1.0-beta.1 (Built on Scash Core 2.3.0 / Bitcoin Core 30.4.0)
+
+`Scash Exchange Wallet` (`v0.1.0-beta.1`) is a standalone multi-coin atomic swap desktop wallet forked from Scash Core `2.3.0` (`scash-exchange-qt` and `scash-exchange-qtkawaii`). It shares your existing Scash blockchain & wallet directory (`%APPDATA%\Scash` / `~/.scash` — run one wallet application at a time) while embedding non-custodial **Native Bitcoin (`bc1q...` via `mempool.space`)**, **Arbitrum One USDT (`~$0.01` gas)**, and **Ethereum Mainnet USDT** wallets derived directly from your passphrase-protected Scash wallet.

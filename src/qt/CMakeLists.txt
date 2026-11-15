@@ -138,6 +138,7 @@ set_property(SOURCE macnotificationhandler.mm
 target_link_libraries(bitcoinqt
   PUBLIC
     Qt6::Widgets
+    $<$<PLATFORM_ID:Windows>:winhttp>
   PRIVATE
     core_interface
     bitcoin_cli
@@ -167,8 +168,16 @@ if(ENABLE_WALLET)
       editaddressdialog.h
       openuridialog.cpp
       openuridialog.h
-      overviewpage.cpp
-      overviewpage.h
+      exchangehtlc.cpp
+    exchangemulticoin.cpp
+    exchangemodel.cpp
+    exchangepage.cpp
+    overviewpage.cpp
+      exchangehtlc.h
+    exchangemulticoin.h
+    exchangemodel.h
+    exchangepage.h
+    overviewpage.h
       paymentserver.cpp
       paymentserver.h
       psbtoperationsdialog.cpp
