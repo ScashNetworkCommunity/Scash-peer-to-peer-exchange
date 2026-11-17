@@ -22,10 +22,12 @@
 #include <windows.h>
 #include <winhttp.h>
 #else
-#include <QByteArray>
-#include <QProcess>
-#include <QString>
-#include <QStringList>
+#include <cerrno>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 #endif
 
@@ -747,34 +749,114 @@ bool HttpsRequestSync(const std::string& url,
     WinHttpCloseHandle(hSession);
     return true;
 #else
-    QProcess proc;
-    QStringList args;
-    args << QStringLiteral("-fsSL")
-         << QStringLiteral("--max-time") << QStringLiteral("12")
-         << QStringLiteral("-X") << QString::fromStdString(method);
+    std::vector<std::string> arg_storage;
+    arg_storage.emplace_back("curl");
+    arg_storage.emplace_back("-fsSL");
+    arg_storage.emplace_back("--max-time");
+    arg_storage.emplace_back("12");
+    arg_storage.emplace_back("-X");
+    arg_storage.emplace_back(method);
     if (!content_type.empty()) {
-        args << QStringLiteral("-H") << QString::fromStdString("Content-Type: " + content_type);
+        arg_storage.emplace_back("-H");
+        arg_storage.emplace_back("Content-Type: " + content_type);
     }
     if (!body.empty()) {
-        args << QStringLiteral("--data-binary") << QStringLiteral("@-");
+        arg_storage.emplace_back("--data-raw");
+        arg_storage.emplace_back(body);
     }
-    args << QString::fromStdString(url);
+    arg_storage.emplace_back(url);
 
-    proc.start(QStringLiteral("curl"), args);
-    if (!proc.waitForStarted(3000)) {
-        out_error = "Failed to start system curl for HTTPS request";
+    std::vector<char*> argv_ptrs;
+    argv_ptrs.reserve(arg_storage.size() + 1);
+    for (std::string& a : arg_storage) {
+        argv_ptrs.push_back(a.data());
+    }
+    argv_ptrs.push_back(nullptr);
+
+    int out_pipe[2] = {-1, -1};
+    int err_pipe[2] = {-1, -1};
+    if (pipe(out_pipe) != 0) {
+        out_error = "Failed to create stdout pipe for curl";
         return false;
     }
-    if (!body.empty()) {
-        proc.write(body.data(), static_cast<qint64>(body.size()));
-    }
-    proc.closeWriteChannel();
-    if (!proc.waitForFinished(13000) || proc.exitCode() != 0) {
-        out_error = QString::fromUtf8(proc.readAllStandardError()).trimmed().toStdString();
-        if (out_error.empty()) out_error = "HTTPS curl request failed";
+    if (pipe(err_pipe) != 0) {
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        out_error = "Failed to create stderr pipe for curl";
         return false;
     }
-    out_response = QString::fromUtf8(proc.readAllStandardOutput()).toStdString();
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        close(err_pipe[0]);
+        close(err_pipe[1]);
+        out_error = "Failed to fork system curl for HTTPS request";
+        return false;
+    }
+    if (pid == 0) {
+        const int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            close(devnull);
+        }
+        dup2(out_pipe[1], STDOUT_FILENO);
+        dup2(err_pipe[1], STDERR_FILENO);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        close(err_pipe[0]);
+        close(err_pipe[1]);
+        execvp("curl", argv_ptrs.data());
+        _exit(127);
+    }
+
+    close(out_pipe[1]);
+    close(err_pipe[1]);
+
+    out_response.clear();
+    std::string err_buf;
+    struct pollfd pfds[2];
+    pfds[0].fd = out_pipe[0];
+    pfds[0].events = POLLIN;
+    pfds[1].fd = err_pipe[0];
+    pfds[1].events = POLLIN;
+
+    int open_fds = 2;
+    char buf[4096];
+    while (open_fds > 0) {
+        const int pr = poll(pfds, 2, 14000);
+        if (pr <= 0) {
+            if (pr < 0 && errno == EINTR) continue;
+            break;
+        }
+        for (int i = 0; i < 2; ++i) {
+            if (pfds[i].fd < 0) continue;
+            if (pfds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
+                const ssize_t n = read(pfds[i].fd, buf, sizeof(buf));
+                if (n > 0) {
+                    if (i == 0) out_response.append(buf, static_cast<size_t>(n));
+                    else err_buf.append(buf, static_cast<size_t>(n));
+                } else if (n == 0 || (n < 0 && errno != EINTR && errno != EAGAIN)) {
+                    close(pfds[i].fd);
+                    pfds[i].fd = -1;
+                    --open_fds;
+                }
+            }
+        }
+    }
+    if (pfds[0].fd >= 0) close(pfds[0].fd);
+    if (pfds[1].fd >= 0) close(pfds[1].fd);
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        while (!err_buf.empty() && (err_buf.back() == '\n' || err_buf.back() == '\r' || err_buf.back() == ' ')) {
+            err_buf.pop_back();
+        }
+        out_error = err_buf.empty() ? "HTTPS curl request failed" : err_buf;
+        return false;
+    }
     return true;
 #endif
 }
